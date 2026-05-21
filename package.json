@@ -1,0 +1,15 @@
+{
+  "name": "preco-perto-scraper",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "install-browsers": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.19.2",
+    "playwright": "^1.49.1"
+  }
+}
