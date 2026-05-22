@@ -7,7 +7,6 @@ const {
   acceptCookies,
   textFirst,
   attrFirst,
-  pricesFromText,
   buildItem
 } = require('./utils');
 
@@ -33,6 +32,178 @@ async function blockHeavyResources(page) {
 
     return route.continue().catch(() => {});
   });
+}
+
+function parsePriceBR(value) {
+  const cleaned = String(value || '')
+    .replace(/[^\d,\.]/g, '')
+    .trim();
+
+  if (!cleaned) return 0;
+
+  return Number(
+    cleaned
+      .replace(/\./g, '')
+      .replace(',', '.')
+  );
+}
+
+function extractPriceCandidatesFromText(text) {
+  const full = String(text || '');
+  const regex = /R\$\s*\d{1,3}(?:\.\d{3})*,\d{2}/g;
+  const matches = [...full.matchAll(regex)];
+
+  return matches
+    .map((match) => {
+      const raw = match[0];
+      const index = match.index || 0;
+      const before = full.slice(Math.max(0, index - 90), index).toLowerCase();
+      const after = full.slice(index, index + 120).toLowerCase();
+      const context = `${before} ${after}`;
+
+      const value = parsePriceBR(raw);
+
+      const isReference =
+        context.includes('/kg') ||
+        context.includes('por kg') ||
+        context.includes('cada kg') ||
+        context.includes('kg') ||
+        context.includes('/un') ||
+        context.includes('cada') ||
+        context.includes('preço por');
+
+      return {
+        raw,
+        value,
+        context,
+        isReference
+      };
+    })
+    .filter((item) => item.value > 0);
+}
+
+function extractPackageMultiplier(text) {
+  const source = String(text || '').toLowerCase();
+
+  const kgMatch = source.match(/\b(\d+(?:[,.]\d+)?)\s?kg\b/i);
+
+  if (kgMatch) {
+    return Number(kgMatch[1].replace(',', '.'));
+  }
+
+  const gMatch = source.match(/\b(\d+(?:[,.]\d+)?)\s?g\b/i);
+
+  if (gMatch) {
+    const grams = Number(gMatch[1].replace(',', '.'));
+
+    if (grams > 0) {
+      return grams / 1000;
+    }
+  }
+
+  const mlMatch = source.match(/\b(\d+(?:[,.]\d+)?)\s?ml\b/i);
+
+  if (mlMatch) {
+    const ml = Number(mlMatch[1].replace(',', '.'));
+
+    if (ml > 0) {
+      return ml / 1000;
+    }
+  }
+
+  const lMatch = source.match(/\b(\d+(?:[,.]\d+)?)\s?l\b/i);
+
+  if (lMatch) {
+    return Number(lMatch[1].replace(',', '.'));
+  }
+
+  return 1;
+}
+
+function pickMainPriceFromText(text, productName = '') {
+  const candidates = extractPriceCandidatesFromText(text);
+
+  if (!candidates.length) {
+    return {
+      price: 0,
+      oldPrice: null,
+      unitPrice: null
+    };
+  }
+
+  const multiplier = extractPackageMultiplier(`${productName} ${text}`);
+
+  const uniqueValues = [...new Set(candidates.map((item) => item.value))]
+    .filter((value) => value > 0)
+    .sort((a, b) => a - b);
+
+  const referenceValues = [...new Set(
+    candidates
+      .filter((item) => item.isReference)
+      .map((item) => item.value)
+  )].sort((a, b) => a - b);
+
+  const nonReferenceValues = [...new Set(
+    candidates
+      .filter((item) => !item.isReference)
+      .map((item) => item.value)
+  )].sort((a, b) => a - b);
+
+  let price = 0;
+  let unitPrice = null;
+  let oldPrice = null;
+
+  /*
+   * Exemplo arroz 5kg:
+   * Se a página mostra R$ 3,59/kg, o preço final estimado é 3,59 x 5 = 17,95.
+   * Isso evita salvar preço por kg como preço do pacote.
+   */
+  if (multiplier > 1 && referenceValues.length) {
+    const calculated = Number((referenceValues[0] * multiplier).toFixed(2));
+
+    if (calculated > referenceValues[0]) {
+      price = calculated;
+      unitPrice = referenceValues[0];
+    }
+  }
+
+  /*
+   * Se existir preço final explícito, usa o menor preço não-referência.
+   * Porém, não troca por valor muito maior se já calculou um preço por peso coerente.
+   */
+  if (!price && nonReferenceValues.length) {
+    price = nonReferenceValues[0];
+  }
+
+  /*
+   * Fallback para páginas sem contexto claro.
+   */
+  if (!price) {
+    if (uniqueValues.length >= 2 && multiplier > 1) {
+      const calculated = Number((uniqueValues[0] * multiplier).toFixed(2));
+
+      if (calculated > uniqueValues[0]) {
+        price = calculated;
+        unitPrice = uniqueValues[0];
+      } else {
+        price = uniqueValues[0];
+      }
+    } else {
+      price = uniqueValues[0];
+    }
+  }
+
+  const possibleOldPrices = uniqueValues.filter((value) => value > price);
+
+  if (possibleOldPrices.length) {
+    oldPrice = possibleOldPrices[possibleOldPrices.length - 1];
+  }
+
+  return {
+    price,
+    oldPrice,
+    unitPrice
+  };
 }
 
 async function applyCep(page, cep) {
@@ -243,29 +414,6 @@ async function findBestProductLink(page, query, sameProductVariant) {
   return null;
 }
 
-function pickMainPriceFromText(text) {
-  const prices = pricesFromText(text);
-
-  if (!prices.length) {
-    return {
-      price: 0,
-      oldPrice: null,
-      unitPrice: null
-    };
-  }
-
-  const sorted = [...prices].sort((a, b) => a - b);
-
-  const price = sorted[0];
-  const oldPrice = sorted.length >= 2 ? sorted[sorted.length - 1] : null;
-
-  return {
-    price,
-    oldPrice: oldPrice && oldPrice > price ? oldPrice : null,
-    unitPrice: oldPrice && oldPrice > price ? oldPrice : null
-  };
-}
-
 async function extractProductDetail(page, product, query, cep, site, sameProductVariant) {
   console.log('[ATACADAO] Abrindo detalhe do produto');
 
@@ -295,7 +443,7 @@ async function extractProductDetail(page, product, query, cep, site, sameProduct
     return null;
   }
 
-  const { price, oldPrice, unitPrice } = pickMainPriceFromText(bodyText);
+  const { price, oldPrice, unitPrice } = pickMainPriceFromText(bodyText, title);
 
   if (!price) {
     console.log('[ATACADAO] Nenhum preço encontrado no detalhe.');
@@ -303,7 +451,6 @@ async function extractProductDetail(page, product, query, cep, site, sameProduct
   }
 
   const image =
-    await attrFirst(page, ['img[alt*="' + title.split(' ')[0] + '"]'], 'src', 1000) ||
     await attrFirst(page, ['img'], 'src', 1000) ||
     await attrFirst(page, ['img'], 'data-src', 1000);
 
@@ -326,6 +473,7 @@ async function extractProductDetail(page, product, query, cep, site, sameProduct
   }
 
   console.log('[ATACADAO] Preço detalhe:', price);
+  console.log('[ATACADAO] Preço referência/kg:', unitPrice || 'não encontrado');
   console.log('[ATACADAO] Preço antigo detalhe:', oldPrice || 'não encontrado');
 
   return item;
