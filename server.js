@@ -84,6 +84,41 @@ app.get('/health', (req, res) => {
   });
 });
 
+app.get('/test-browser', async (req, res) => {
+  let browser;
+
+  try {
+    browser = await chromium.launch({
+      headless: HEADLESS,
+      args: ['--no-sandbox', '--disable-dev-shm-usage']
+    });
+
+    const page = await browser.newPage();
+
+    await page.goto('https://example.com', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    });
+
+    const title = await page.title();
+
+    res.json({
+      success: true,
+      message: 'Chromium abriu corretamente.',
+      title
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
+});
+
 app.post('/scrape', async (req, res) => {
   const cep = cleanCep(req.body.cep);
   const query = String(req.body.query || '').trim();
