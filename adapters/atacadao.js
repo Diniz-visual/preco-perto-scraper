@@ -14,9 +14,17 @@ const {
 const BASE_URL = 'https://www.atacadao.com.br/';
 
 async function applyCep(page, cep) {
-  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await sleep(2500);
+  console.log('[ATACADAO] Abrindo site');
+
+  await page.goto(BASE_URL, {
+    waitUntil: 'domcontentloaded',
+    timeout: 25000
+  });
+
+  await sleep(1800);
   await acceptCookies(page);
+
+  console.log('[ATACADAO] Tentando abrir seletor de CEP');
 
   await safeClick(page, [
     'button:has-text("CEP")',
@@ -36,9 +44,11 @@ async function applyCep(page, cep) {
     '[data-testid*="cep"]',
     '[data-testid*="delivery"]',
     '[data-testid*="location"]'
-  ], 9000);
+  ], 4000);
 
-  await sleep(1800);
+  await sleep(1000);
+
+  console.log('[ATACADAO] Tentando preencher CEP');
 
   const filled = await safeFill(page, [
     'input[name="cep"]',
@@ -51,11 +61,14 @@ async function applyCep(page, cep) {
     'input[inputmode="numeric"]',
     'input[type="tel"]',
     'input[type="text"]'
-  ], cep, 10000);
+  ], cep, 5000);
 
-  if (!filled) return false;
+  if (!filled) {
+    console.log('[ATACADAO] Input de CEP não encontrado');
+    return false;
+  }
 
-  await sleep(700);
+  await sleep(500);
 
   await safePress(page, [
     'input[name="cep"]',
@@ -67,7 +80,7 @@ async function applyCep(page, cep) {
     'input[inputmode="numeric"]',
     'input[type="tel"]',
     'input[type="text"]'
-  ], 'Enter', 3000);
+  ], 'Enter', 1500);
 
   await safeClick(page, [
     'button:has-text("Confirmar")',
@@ -78,7 +91,7 @@ async function applyCep(page, cep) {
     'button:has-text("Usar este endereço")',
     'button:has-text("Selecionar")',
     'button[type="submit"]'
-  ], 8000);
+  ], 3500);
 
   await sleep(2500);
 
@@ -89,14 +102,21 @@ async function applyCep(page, cep) {
     'button:has-text("Comprar nessa loja")',
     'button:has-text("Continuar")',
     'button:has-text("Confirmar")'
-  ], 5000);
+  ], 2500);
 
-  await sleep(5000);
+  await sleep(2500);
 
-  const bodyText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+  const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
   const formatted = cep.slice(0, 5) + '-' + cep.slice(5);
 
-  return bodyText.includes(cep) || bodyText.includes(formatted) || /entreg|cep/i.test(bodyText);
+  const ok =
+    bodyText.includes(cep) ||
+    bodyText.includes(formatted) ||
+    /entreg|cep|loja|retirada/i.test(bodyText);
+
+  console.log('[ATACADAO] CEP aplicado:', ok ? 'sim/provável' : 'não confirmado');
+
+  return ok;
 }
 
 async function openSearch(page, query) {
@@ -110,14 +130,26 @@ async function openSearch(page, query) {
 
   for (const url of urls) {
     try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await sleep(4500);
+      console.log('[ATACADAO] Buscando em:', url);
 
-      const count = await page.locator('article, li, a, [class*="product"], [data-testid*="product"]').count();
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 25000
+      });
 
-      if (count > 0) return true;
-    } catch (e) {}
+      await sleep(3000);
+
+      const bodyText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+
+      if (bodyText && /R\$|\d+,\d{2}|produto|resultados|tang/i.test(bodyText)) {
+        return true;
+      }
+    } catch (error) {
+      console.log('[ATACADAO] Falha na URL:', url, error.message);
+    }
   }
+
+  console.log('[ATACADAO] Tentando busca pelo input');
 
   const filled = await safeFill(page, [
     'input[type="search"]',
@@ -125,9 +157,11 @@ async function openSearch(page, query) {
     'input[placeholder*="busca"]',
     'input[name="q"]',
     'input[name="search"]'
-  ], query, 8000);
+  ], query, 4000);
 
-  if (!filled) return false;
+  if (!filled) {
+    return false;
+  }
 
   await safePress(page, [
     'input[type="search"]',
@@ -135,14 +169,17 @@ async function openSearch(page, query) {
     'input[placeholder*="busca"]',
     'input[name="q"]',
     'input[name="search"]'
-  ], 'Enter', 3000);
+  ], 'Enter', 1500);
 
-  await sleep(4500);
+  await sleep(3000);
+
   return true;
 }
 
 async function extractProducts(page, query, cep, site, sameProductVariant) {
   const items = [];
+
+  console.log('[ATACADAO] Extraindo produtos');
 
   const selectors = [
     '[data-testid*="product"]',
@@ -150,73 +187,108 @@ async function extractProducts(page, query, cep, site, sameProductVariant) {
     '[class*="ProductCard"]',
     '[class*="shelf-item"]',
     '[class*="item-product"]',
+    '[class*="product"]',
+    '[class*="Product"]',
     'article',
     'li'
   ];
 
   for (const selector of selectors) {
-    const cards = page.locator(selector);
-    const count = Math.min(await cards.count(), 35);
+    let count = 0;
 
-    for (let i = 0; i < count; i++) {
-      const card = cards.nth(i);
-      let fullText = '';
+    try {
+      const cards = page.locator(selector);
+      count = Math.min(await cards.count(), 25);
 
-      try {
-        fullText = await card.innerText({ timeout: 1600 });
-      } catch (e) {
+      if (!count) {
         continue;
       }
 
-      if (!fullText || !sameProductVariant(query, fullText)) continue;
+      console.log(`[ATACADAO] Selector ${selector}: ${count} cards`);
 
-      const name = await textFirst(card, [
-        '[class*="name"]',
-        '[class*="title"]',
-        '[data-testid*="name"]',
-        '[data-testid*="title"]',
-        'h2',
-        'h3',
-        'a'
-      ]) || fullText.split('\n')[0];
+      for (let i = 0; i < count; i++) {
+        const card = cards.nth(i);
+        let fullText = '';
 
-      if (!sameProductVariant(query, `${name} ${fullText}`)) continue;
+        try {
+          fullText = await card.innerText({ timeout: 1000 });
+        } catch (error) {
+          continue;
+        }
 
-      const prices = pricesFromText(fullText);
-      if (!prices.length) continue;
+        if (!fullText || !sameProductVariant(query, fullText)) {
+          continue;
+        }
 
-      const price = Math.min(...prices);
-      const unitPrice = prices.length >= 2 ? Math.max(...prices) : null;
+        const name = await textFirst(card, [
+          '[class*="name"]',
+          '[class*="title"]',
+          '[data-testid*="name"]',
+          '[data-testid*="title"]',
+          'h2',
+          'h3',
+          'a'
+        ], 1000) || fullText.split('\n')[0];
 
-      const image = await attrFirst(card, ['img'], 'src') || await attrFirst(card, ['img'], 'data-src');
-      const href = await attrFirst(card, ['a'], 'href');
+        if (!sameProductVariant(query, `${name} ${fullText}`)) {
+          continue;
+        }
 
-      items.push(buildItem({
-        name,
-        fullText,
-        price,
-        unitPrice,
-        image: absoluteUrl(image, BASE_URL),
-        sourceUrl: absoluteUrl(href, BASE_URL),
-        site,
-        cep
-      }));
+        const prices = pricesFromText(fullText);
+
+        if (!prices.length) {
+          continue;
+        }
+
+        const price = Math.min(...prices);
+        const unitPrice = prices.length >= 2 ? Math.max(...prices) : null;
+
+        const image =
+          await attrFirst(card, ['img'], 'src', 1000) ||
+          await attrFirst(card, ['img'], 'data-src', 1000);
+
+        const href = await attrFirst(card, ['a'], 'href', 1000);
+
+        items.push(buildItem({
+          name,
+          fullText,
+          price,
+          unitPrice,
+          image: absoluteUrl(image, BASE_URL),
+          sourceUrl: absoluteUrl(href, BASE_URL),
+          site,
+          cep
+        }));
+      }
+
+      if (items.length) {
+        break;
+      }
+    } catch (error) {
+      console.log('[ATACADAO] Erro ao extrair selector:', selector, error.message);
     }
-
-    if (items.length) break;
   }
+
+  console.log('[ATACADAO] Itens extraídos:', items.length);
 
   return items;
 }
 
 async function scrape({ page, cep, query, site, sameProductVariant }) {
-  const cepApplied = await applyCep(page, cep).catch(() => false);
+  let cepApplied = false;
+
+  try {
+    cepApplied = await applyCep(page, cep);
+  } catch (error) {
+    console.log('[ATACADAO] Erro ao aplicar CEP:', error.message);
+  }
+
   const searched = await openSearch(page, query);
 
   if (!searched) {
     return {
       success: false,
-      message: 'Não foi possível buscar no Atacadão.',
+      message: `Não foi possível buscar no Atacadão. CEP aplicado: ${cepApplied ? 'sim' : 'não confirmado'}.`,
       items: []
     };
   }
