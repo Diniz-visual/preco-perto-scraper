@@ -48,161 +48,111 @@ function parsePriceBR(value) {
   );
 }
 
-function extractPriceCandidatesFromText(text) {
+function extractPricesFromText(text) {
   const full = String(text || '');
   const regex = /R\$\s*\d{1,3}(?:\.\d{3})*,\d{2}/g;
-  const matches = [...full.matchAll(regex)];
 
-  return matches
-    .map((match) => {
-      const raw = match[0];
-      const index = match.index || 0;
-      const before = full.slice(Math.max(0, index - 90), index).toLowerCase();
-      const after = full.slice(index, index + 120).toLowerCase();
-      const context = `${before} ${after}`;
-
-      const value = parsePriceBR(raw);
-
-      const isReference =
-        context.includes('/kg') ||
-        context.includes('por kg') ||
-        context.includes('cada kg') ||
-        context.includes('kg') ||
-        context.includes('/un') ||
-        context.includes('cada') ||
-        context.includes('preço por');
-
-      return {
-        raw,
-        value,
-        context,
-        isReference
-      };
-    })
-    .filter((item) => item.value > 0);
+  return [...full.matchAll(regex)]
+    .map((match) => parsePriceBR(match[0]))
+    .filter((value) => value > 0);
 }
 
-function extractPackageMultiplier(text) {
-  const source = String(text || '').toLowerCase();
+async function getVisibleText(page, selectors, timeout = 1500) {
+  for (const selector of selectors) {
+    try {
+      const locator = page.locator(selector).first();
 
-  const kgMatch = source.match(/\b(\d+(?:[,.]\d+)?)\s?kg\b/i);
+      await locator.waitFor({
+        state: 'visible',
+        timeout
+      });
 
-  if (kgMatch) {
-    return Number(kgMatch[1].replace(',', '.'));
+      const text = await locator.innerText({
+        timeout
+      });
+
+      if (text && text.trim()) {
+        return text.trim();
+      }
+    } catch (error) {}
   }
 
-  const gMatch = source.match(/\b(\d+(?:[,.]\d+)?)\s?g\b/i);
-
-  if (gMatch) {
-    const grams = Number(gMatch[1].replace(',', '.'));
-
-    if (grams > 0) {
-      return grams / 1000;
-    }
-  }
-
-  const mlMatch = source.match(/\b(\d+(?:[,.]\d+)?)\s?ml\b/i);
-
-  if (mlMatch) {
-    const ml = Number(mlMatch[1].replace(',', '.'));
-
-    if (ml > 0) {
-      return ml / 1000;
-    }
-  }
-
-  const lMatch = source.match(/\b(\d+(?:[,.]\d+)?)\s?l\b/i);
-
-  if (lMatch) {
-    return Number(lMatch[1].replace(',', '.'));
-  }
-
-  return 1;
+  return '';
 }
 
-function pickMainPriceFromText(text, productName = '') {
-  const candidates = extractPriceCandidatesFromText(text);
+async function getPriceBlockText(page) {
+  const selectors = [
+    '[data-testid*="price"]',
+    '[data-testid*="Price"]',
+    '[class*="price"]',
+    '[class*="Price"]',
+    '[class*="valor"]',
+    '[class*="Valor"]',
+    '[class*="buybox"]',
+    '[class*="BuyBox"]',
+    '[class*="product-info"]',
+    '[class*="ProductInfo"]',
+    '[class*="summary"]',
+    '[class*="Summary"]',
+    'aside',
+    'section:has-text("R$")',
+    'div:has-text("R$")'
+  ];
 
-  if (!candidates.length) {
+  for (const selector of selectors) {
+    try {
+      const locators = page.locator(selector);
+      const count = Math.min(await locators.count(), 12);
+
+      for (let i = 0; i < count; i++) {
+        const el = locators.nth(i);
+
+        const text = await el.innerText({
+          timeout: 1200
+        }).catch(() => '');
+
+        if (!text || !text.includes('R$')) {
+          continue;
+        }
+
+        const prices = extractPricesFromText(text);
+
+        if (prices.length) {
+          return text;
+        }
+      }
+    } catch (error) {}
+  }
+
+  return '';
+}
+
+function pickPriceFromReliableBlock(text) {
+  const prices = extractPricesFromText(text);
+
+  if (!prices.length) {
     return {
       price: 0,
-      oldPrice: null,
-      unitPrice: null
+      oldPrice: null
     };
   }
 
-  const multiplier = extractPackageMultiplier(`${productName} ${text}`);
+  const unique = [...new Set(prices)].sort((a, b) => a - b);
 
-  const uniqueValues = [...new Set(candidates.map((item) => item.value))]
-    .filter((value) => value > 0)
-    .sort((a, b) => a - b);
-
-  const referenceValues = [...new Set(
-    candidates
-      .filter((item) => item.isReference)
-      .map((item) => item.value)
-  )].sort((a, b) => a - b);
-
-  const nonReferenceValues = [...new Set(
-    candidates
-      .filter((item) => !item.isReference)
-      .map((item) => item.value)
-  )].sort((a, b) => a - b);
-
-  let price = 0;
-  let unitPrice = null;
+  let price = unique[0];
   let oldPrice = null;
 
-  /*
-   * Exemplo arroz 5kg:
-   * Se a página mostra R$ 3,59/kg, o preço final estimado é 3,59 x 5 = 17,95.
-   * Isso evita salvar preço por kg como preço do pacote.
-   */
-  if (multiplier > 1 && referenceValues.length) {
-    const calculated = Number((referenceValues[0] * multiplier).toFixed(2));
+  if (unique.length >= 2) {
+    oldPrice = unique[unique.length - 1];
 
-    if (calculated > referenceValues[0]) {
-      price = calculated;
-      unitPrice = referenceValues[0];
+    if (oldPrice <= price) {
+      oldPrice = null;
     }
-  }
-
-  /*
-   * Se existir preço final explícito, usa o menor preço não-referência.
-   * Porém, não troca por valor muito maior se já calculou um preço por peso coerente.
-   */
-  if (!price && nonReferenceValues.length) {
-    price = nonReferenceValues[0];
-  }
-
-  /*
-   * Fallback para páginas sem contexto claro.
-   */
-  if (!price) {
-    if (uniqueValues.length >= 2 && multiplier > 1) {
-      const calculated = Number((uniqueValues[0] * multiplier).toFixed(2));
-
-      if (calculated > uniqueValues[0]) {
-        price = calculated;
-        unitPrice = uniqueValues[0];
-      } else {
-        price = uniqueValues[0];
-      }
-    } else {
-      price = uniqueValues[0];
-    }
-  }
-
-  const possibleOldPrices = uniqueValues.filter((value) => value > price);
-
-  if (possibleOldPrices.length) {
-    oldPrice = possibleOldPrices[possibleOldPrices.length - 1];
   }
 
   return {
     price,
-    oldPrice,
-    unitPrice
+    oldPrice
   };
 }
 
@@ -214,12 +164,12 @@ async function applyCep(page, cep) {
     timeout: 35000
   });
 
-  await sleep(1800);
+  await sleep(2500);
   await acceptCookies(page);
 
   console.log('[ATACADAO] Tentando abrir seletor de CEP');
 
-  await safeClick(page, [
+  const opened = await safeClick(page, [
     'button:has-text("CEP")',
     'button:has-text("Entregue")',
     'button:has-text("Entrega")',
@@ -237,9 +187,11 @@ async function applyCep(page, cep) {
     '[data-testid*="cep"]',
     '[data-testid*="delivery"]',
     '[data-testid*="location"]'
-  ], 2500);
+  ], 3500);
 
-  await sleep(800);
+  console.log('[ATACADAO] Seletor de CEP aberto:', opened ? 'sim' : 'não');
+
+  await sleep(1200);
 
   console.log('[ATACADAO] Tentando preencher CEP');
 
@@ -253,14 +205,14 @@ async function applyCep(page, cep) {
     'input[aria-label*="cep"]',
     'input[inputmode="numeric"]',
     'input[type="tel"]'
-  ], cep, 2500);
+  ], cep, 4000);
 
   if (!filled) {
-    console.log('[ATACADAO] Input de CEP não encontrado. Continuando para busca.');
+    console.log('[ATACADAO] Input de CEP não encontrado. Não é seguro capturar preço.');
     return false;
   }
 
-  await sleep(500);
+  await sleep(600);
 
   await safePress(page, [
     'input[name="cep"]',
@@ -271,7 +223,9 @@ async function applyCep(page, cep) {
     'input[aria-label*="CEP"]',
     'input[inputmode="numeric"]',
     'input[type="tel"]'
-  ], 'Enter', 1500);
+  ], 'Enter', 2000);
+
+  await sleep(800);
 
   await safeClick(page, [
     'button:has-text("Confirmar")',
@@ -282,9 +236,9 @@ async function applyCep(page, cep) {
     'button:has-text("Usar este endereço")',
     'button:has-text("Selecionar")',
     'button[type="submit"]'
-  ], 2500);
+  ], 4000);
 
-  await sleep(1800);
+  await sleep(2500);
 
   await safeClick(page, [
     'button:has-text("Selecionar loja")',
@@ -293,19 +247,18 @@ async function applyCep(page, cep) {
     'button:has-text("Comprar nessa loja")',
     'button:has-text("Continuar")',
     'button:has-text("Confirmar")'
-  ], 2000);
+  ], 3500);
 
-  await sleep(1600);
+  await sleep(3500);
 
-  const bodyText = await page.locator('body').innerText({ timeout: 2500 }).catch(() => '');
+  const bodyText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
   const formatted = cep.slice(0, 5) + '-' + cep.slice(5);
 
   const ok =
     bodyText.includes(cep) ||
-    bodyText.includes(formatted) ||
-    /entreg|cep|loja|retirada/i.test(bodyText);
+    bodyText.includes(formatted);
 
-  console.log('[ATACADAO] CEP aplicado:', ok ? 'sim/provável' : 'não confirmado');
+  console.log('[ATACADAO] CEP aplicado confirmado:', ok ? 'sim' : 'não');
 
   return ok;
 }
@@ -328,11 +281,11 @@ async function openSearch(page, query) {
         timeout: 35000
       });
 
-      await sleep(3500);
+      await sleep(4000);
 
-      const bodyText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+      const bodyText = await page.locator('body').innerText({ timeout: 6000 }).catch(() => '');
 
-      if (bodyText && /R\$|\d+,\d{2}|produto|resultados/i.test(bodyText)) {
+      if (bodyText && /produto|resultados|R\$|\d+,\d{2}/i.test(bodyText)) {
         console.log('[ATACADAO] Página de busca carregada');
         return true;
       }
@@ -361,7 +314,7 @@ async function findBestProductLink(page, query, sameProductVariant) {
 
   for (const selector of selectors) {
     const cards = page.locator(selector);
-    const count = Math.min(await cards.count(), 30);
+    const count = Math.min(await cards.count(), 35);
 
     if (!count) continue;
 
@@ -422,31 +375,40 @@ async function extractProductDetail(page, product, query, cep, site, sameProduct
     timeout: 45000
   });
 
-  await sleep(4500);
-
-  const bodyText = await page.locator('body').innerText({ timeout: 10000 }).catch(() => '');
-
-  if (!bodyText || bodyText.length < 100) {
-    console.log('[ATACADAO] Página de detalhe vazia.');
-    return null;
-  }
+  await sleep(5000);
 
   const title = await textFirst(page, [
     'h1',
     '[data-testid*="title"]',
     '[class*="title"]',
     '[class*="name"]'
-  ], 2000) || product.name;
+  ], 2500) || product.name;
+
+  const bodyText = await page.locator('body').innerText({ timeout: 8000 }).catch(() => '');
+
+  if (!bodyText || bodyText.length < 100) {
+    console.log('[ATACADAO] Página de detalhe vazia.');
+    return null;
+  }
 
   if (!sameProductVariant(query, `${title} ${bodyText}`)) {
     console.log('[ATACADAO] Detalhe não bate com a busca:', title);
     return null;
   }
 
-  const { price, oldPrice, unitPrice } = pickMainPriceFromText(bodyText, title);
+  const priceBlockText = await getPriceBlockText(page);
+
+  if (!priceBlockText) {
+    console.log('[ATACADAO] Bloco de preço confiável não encontrado.');
+    return null;
+  }
+
+  console.log('[ATACADAO] Texto do bloco de preço:', priceBlockText.replace(/\s+/g, ' ').slice(0, 300));
+
+  const { price, oldPrice } = pickPriceFromReliableBlock(priceBlockText);
 
   if (!price) {
-    console.log('[ATACADAO] Nenhum preço encontrado no detalhe.');
+    console.log('[ATACADAO] Nenhum preço válido encontrado no bloco confiável.');
     return null;
   }
 
@@ -456,9 +418,9 @@ async function extractProductDetail(page, product, query, cep, site, sameProduct
 
   const item = buildItem({
     name: title,
-    fullText: bodyText,
+    fullText: priceBlockText,
     price,
-    unitPrice,
+    unitPrice: null,
     image: absoluteUrl(image, BASE_URL),
     sourceUrl: product.url,
     site,
@@ -467,14 +429,12 @@ async function extractProductDetail(page, product, query, cep, site, sameProduct
 
   if (oldPrice) {
     item.old_price = oldPrice;
-    item.unit_price = unitPrice;
     item.is_promotion = true;
     item.discount_percent = Math.round(((oldPrice - price) / oldPrice) * 100);
   }
 
-  console.log('[ATACADAO] Preço detalhe:', price);
-  console.log('[ATACADAO] Preço referência/kg:', unitPrice || 'não encontrado');
-  console.log('[ATACADAO] Preço antigo detalhe:', oldPrice || 'não encontrado');
+  console.log('[ATACADAO] Preço final confiável:', price);
+  console.log('[ATACADAO] Preço antigo confiável:', oldPrice || 'não encontrado');
 
   return item;
 }
@@ -482,12 +442,17 @@ async function extractProductDetail(page, product, query, cep, site, sameProduct
 async function scrape({ page, cep, query, site, sameProductVariant }) {
   await blockHeavyResources(page);
 
-  let cepApplied = false;
-
-  try {
-    cepApplied = await applyCep(page, cep);
-  } catch (error) {
+  const cepApplied = await applyCep(page, cep).catch((error) => {
     console.log('[ATACADAO] Erro ao aplicar CEP:', error.message);
+    return false;
+  });
+
+  if (!cepApplied) {
+    return {
+      success: false,
+      message: 'Atacadão ignorado: não foi possível aplicar/confirmar o CEP. Para evitar preço errado, nada foi salvo.',
+      items: []
+    };
   }
 
   const searched = await openSearch(page, query);
@@ -495,7 +460,7 @@ async function scrape({ page, cep, query, site, sameProductVariant }) {
   if (!searched) {
     return {
       success: false,
-      message: `Não foi possível buscar no Atacadão. CEP aplicado: ${cepApplied ? 'sim' : 'não confirmado'}.`,
+      message: 'Não foi possível buscar no Atacadão após aplicar o CEP.',
       items: []
     };
   }
@@ -505,7 +470,7 @@ async function scrape({ page, cep, query, site, sameProductVariant }) {
   if (!product) {
     return {
       success: true,
-      message: `Nenhum produto compatível encontrado no Atacadão. CEP aplicado: ${cepApplied ? 'sim' : 'não confirmado'}.`,
+      message: 'Nenhum produto compatível encontrado no Atacadão.',
       items: []
     };
   }
@@ -515,14 +480,14 @@ async function scrape({ page, cep, query, site, sameProductVariant }) {
   if (!detailItem) {
     return {
       success: true,
-      message: `Produto encontrado, mas não foi possível ler o preço do detalhe. CEP aplicado: ${cepApplied ? 'sim' : 'não confirmado'}.`,
+      message: 'Produto encontrado, mas nenhum preço confiável foi capturado no detalhe.',
       items: []
     };
   }
 
   return {
     success: true,
-    message: `1 produto no Atacadão com preço da página de detalhe. CEP aplicado: ${cepApplied ? 'sim' : 'não confirmado'}.`,
+    message: '1 produto no Atacadão com preço confiável da página de detalhe.',
     items: [detailItem]
   };
 }
