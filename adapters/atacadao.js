@@ -7,7 +7,6 @@ const {
   acceptCookies,
   textFirst,
   attrFirst,
-  pricesFromText,
   buildItem
 } = require('./utils');
 
@@ -40,17 +39,23 @@ function formatCep(cep) {
   return clean.length === 8 ? `${clean.slice(0, 5)}-${clean.slice(5)}` : clean;
 }
 
+function parsePriceBR(value) {
+  const cleaned = String(value || '')
+    .replace(/[^\d,\.]/g, '')
+    .trim();
+
+  if (!cleaned) return 0;
+
+  return Number(
+    cleaned
+      .replace(/\./g, '')
+      .replace(',', '.')
+  );
+}
+
 function extractPrices(text) {
   const values = [...String(text || '').matchAll(/R\$\s*\d{1,3}(?:\.\d{3})*,\d{2}/g)]
-    .map((match) => match[0])
-    .map((value) => {
-      return Number(
-        value
-          .replace(/[^\d,\.]/g, '')
-          .replace(/\./g, '')
-          .replace(',', '.')
-      );
-    })
+    .map((match) => parsePriceBR(match[0]))
     .filter((value) => value > 0);
 
   return [...new Set(values)].sort((a, b) => a - b);
@@ -58,6 +63,42 @@ function extractPrices(text) {
 
 async function getBodyText(page, timeout = 5000) {
   return page.locator('body').innerText({ timeout }).catch(() => '');
+}
+
+async function getModalDebug(page) {
+  return page.evaluate(() => {
+    function cleanText(value) {
+      return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    const buttons = Array.from(document.querySelectorAll('button')).map((el, index) => ({
+      index,
+      text: cleanText(el.innerText || el.textContent),
+      aria: el.getAttribute('aria-label'),
+      title: el.getAttribute('title'),
+      className: String(el.className || ''),
+      id: el.id || ''
+    }));
+
+    const inputs = Array.from(document.querySelectorAll('input')).map((el, index) => ({
+      index,
+      type: el.getAttribute('type'),
+      name: el.getAttribute('name'),
+      placeholder: el.getAttribute('placeholder'),
+      aria: el.getAttribute('aria-label'),
+      inputmode: el.getAttribute('inputmode'),
+      className: String(el.className || ''),
+      id: el.id || ''
+    }));
+
+    const bodyText = cleanText(document.body.innerText).slice(0, 1000);
+
+    return {
+      bodyText,
+      buttons,
+      inputs
+    };
+  }).catch(() => null);
 }
 
 async function applyCep(page, cep) {
@@ -74,72 +115,85 @@ async function applyCep(page, cep) {
   await sleep(2500);
   await acceptCookies(page);
 
-  console.log('[ATACADAO] Tentando abrir área de CEP');
+  console.log('[ATACADAO] Tentando abrir modal de localização');
 
   const opened = await safeClick(page, [
-    'button:has-text("CEP")',
-    'button:has-text("Entregue")',
-    'button:has-text("Entrega")',
-    'button:has-text("Alterar")',
-    'button:has-text("Editar")',
-    'button:has-text("Informe")',
-    'a:has-text("CEP")',
-    'a:has-text("Entregue")',
-    'a:has-text("Alterar")',
-    '[aria-label*="CEP"]',
-    '[aria-label*="cep"]',
-    '[aria-label*="endereço"]',
-    '[aria-label*="Endereço"]',
-    '[class*="delivery"]',
-    '[class*="Delivery"]',
-    '[class*="location"]',
-    '[class*="Location"]',
-    '[class*="zipcode"]',
-    '[class*="cep"]',
-    '[data-testid*="cep"]',
-    '[data-testid*="zipcode"]',
-    '[data-testid*="delivery"]',
-    '[data-testid*="location"]'
-  ], 4000);
+    'button[title="Abrir modal de regionalização"]',
+    'button:has-text("INFORMAR LOCALIZAÇÃO")',
+    'button:has-text("Informar Localização")',
+    'button:has-text("Informe seu CEP")',
+    'button:has-text("informe seu CEP")',
+    'button:has-text("Escolha uma loja")',
+    'button:has-text("Localização")',
+    'button:has-text("localização")',
+    'button:has-text("CEP")'
+  ], 7000);
 
-  console.log('[ATACADAO] Área de CEP aberta:', opened ? 'sim' : 'não');
+  console.log('[ATACADAO] Modal de localização aberto:', opened ? 'sim' : 'não');
 
-  await sleep(1200);
+  if (!opened) {
+    console.log('[ATACADAO] Não abriu modal de localização. Preço não será capturado.');
+    return false;
+  }
+
+  await sleep(3000);
+
+  const debugAfterOpen = await getModalDebug(page);
+
+  if (debugAfterOpen) {
+    console.log('[ATACADAO] Debug após abrir modal - inputs:', JSON.stringify(debugAfterOpen.inputs).slice(0, 1200));
+    console.log('[ATACADAO] Debug após abrir modal - buttons:', JSON.stringify(debugAfterOpen.buttons).slice(0, 1200));
+    console.log('[ATACADAO] Debug após abrir modal - body:', debugAfterOpen.bodyText.slice(0, 700));
+  }
 
   console.log('[ATACADAO] Tentando preencher CEP');
 
   const filled = await safeFill(page, [
-    'input[name="cep"]',
-    'input[name="zipcode"]',
-    'input[name="postalCode"]',
     'input[placeholder*="CEP"]',
     'input[placeholder*="cep"]',
     'input[aria-label*="CEP"]',
     'input[aria-label*="cep"]',
+    'input[name="cep"]',
+    'input[name="zipcode"]',
+    'input[name="postalCode"]',
     'input[inputmode="numeric"]',
-    'input[type="tel"]'
-  ], cleanCep, 5000);
+    'input[type="tel"]',
+    'input[type="text"]',
+    'div[role="dialog"] input',
+    '[class*="modal"] input',
+    '[class*="Modal"] input',
+    '[class*="regional"] input',
+    '[class*="Regional"] input'
+  ], cleanCep, 9000);
 
   if (!filled) {
-    console.log('[ATACADAO] Input de CEP não encontrado. Preço não será capturado.');
+    console.log('[ATACADAO] Input de CEP não encontrado após abrir modal. Preço não será capturado.');
     return false;
   }
 
-  await sleep(700);
+  await sleep(800);
 
   await safePress(page, [
-    'input[name="cep"]',
-    'input[name="zipcode"]',
-    'input[name="postalCode"]',
     'input[placeholder*="CEP"]',
     'input[placeholder*="cep"]',
     'input[aria-label*="CEP"]',
     'input[aria-label*="cep"]',
+    'input[name="cep"]',
+    'input[name="zipcode"]',
+    'input[name="postalCode"]',
     'input[inputmode="numeric"]',
-    'input[type="tel"]'
-  ], 'Enter', 2000);
+    'input[type="tel"]',
+    'input[type="text"]',
+    'div[role="dialog"] input',
+    '[class*="modal"] input',
+    '[class*="Modal"] input',
+    '[class*="regional"] input',
+    '[class*="Regional"] input'
+  ], 'Enter', 2500);
 
-  await sleep(800);
+  await sleep(1200);
+
+  console.log('[ATACADAO] Tentando confirmar CEP');
 
   await safeClick(page, [
     'button:has-text("Confirmar")',
@@ -149,10 +203,14 @@ async function applyCep(page, cep) {
     'button:has-text("Buscar")',
     'button:has-text("Usar este endereço")',
     'button:has-text("Selecionar")',
+    'button:has-text("Selecionar loja")',
+    'button:has-text("Informar")',
     'button[type="submit"]'
-  ], 4500);
+  ], 8000);
 
-  await sleep(3500);
+  await sleep(4000);
+
+  console.log('[ATACADAO] Tentando selecionar loja, se aparecer');
 
   await safeClick(page, [
     'button:has-text("Selecionar loja")',
@@ -161,17 +219,24 @@ async function applyCep(page, cep) {
     'button:has-text("Comprar nessa loja")',
     'button:has-text("Continuar")',
     'button:has-text("Confirmar")'
-  ], 4000);
+  ], 6000);
 
-  await sleep(4000);
+  await sleep(5000);
 
-  const bodyText = await getBodyText(page, 7000);
+  const bodyText = await getBodyText(page, 9000);
 
   const confirmed =
     bodyText.includes(cleanCep) ||
-    bodyText.includes(formattedCep);
+    bodyText.includes(formattedCep) ||
+    bodyText.toLowerCase().includes('para o cep') ||
+    bodyText.toLowerCase().includes('entregue pela') ||
+    bodyText.toLowerCase().includes('retirada');
 
   console.log('[ATACADAO] CEP aplicado confirmado:', confirmed ? 'sim' : 'não');
+
+  if (!confirmed) {
+    console.log('[ATACADAO] Body após tentativa de CEP:', bodyText.slice(0, 900));
+  }
 
   return confirmed;
 }
