@@ -297,19 +297,25 @@ app.post('/scrape', async (req, res) => {
     );
 
     for (const site of sites) {
-      const adapter = adapters[site.adapter];
+const adapter = adapters[site.adapter];
 
-      if (!adapter || typeof adapter.scrape !== 'function') {
-        logs.push({
-          site: site.id,
-          market: site.market,
-          success: false,
-          message: 'Adapter não encontrado.',
-          total: 0
-        });
+if (!adapter || typeof adapter.scrape !== 'function') {
+  console.error('[SCRAPE] Adapter não encontrado:', {
+    siteId: site.id,
+    adapterName: site.adapter,
+    availableAdapters: Object.keys(adapters)
+  });
 
-        continue;
-      }
+  logs.push({
+    site: site.id,
+    market: site.market,
+    success: false,
+    message: `Adapter não encontrado: ${site.adapter || 'sem adapter definido'}`,
+    total: 0
+  });
+
+  continue;
+}
 
       let context;
 
