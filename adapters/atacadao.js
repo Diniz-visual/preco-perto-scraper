@@ -18,10 +18,10 @@ async function applyCep(page, cep) {
 
   await page.goto(BASE_URL, {
     waitUntil: 'domcontentloaded',
-    timeout: 25000
+    timeout: 45000
   });
 
-  await sleep(1800);
+  await sleep(2500);
   await acceptCookies(page);
 
   console.log('[ATACADAO] Tentando abrir seletor de CEP');
@@ -44,9 +44,9 @@ async function applyCep(page, cep) {
     '[data-testid*="cep"]',
     '[data-testid*="delivery"]',
     '[data-testid*="location"]'
-  ], 4000);
+  ], 6000);
 
-  await sleep(1000);
+  await sleep(1200);
 
   console.log('[ATACADAO] Tentando preencher CEP');
 
@@ -59,16 +59,15 @@ async function applyCep(page, cep) {
     'input[aria-label*="CEP"]',
     'input[aria-label*="cep"]',
     'input[inputmode="numeric"]',
-    'input[type="tel"]',
-    'input[type="text"]'
-  ], cep, 5000);
+    'input[type="tel"]'
+  ], cep, 8000);
 
   if (!filled) {
-    console.log('[ATACADAO] Input de CEP não encontrado');
+    console.log('[ATACADAO] Input de CEP não encontrado. Continuando para busca.');
     return false;
   }
 
-  await sleep(500);
+  await sleep(700);
 
   await safePress(page, [
     'input[name="cep"]',
@@ -78,9 +77,8 @@ async function applyCep(page, cep) {
     'input[placeholder*="cep"]',
     'input[aria-label*="CEP"]',
     'input[inputmode="numeric"]',
-    'input[type="tel"]',
-    'input[type="text"]'
-  ], 'Enter', 1500);
+    'input[type="tel"]'
+  ], 'Enter', 2500);
 
   await safeClick(page, [
     'button:has-text("Confirmar")',
@@ -91,9 +89,9 @@ async function applyCep(page, cep) {
     'button:has-text("Usar este endereço")',
     'button:has-text("Selecionar")',
     'button[type="submit"]'
-  ], 3500);
+  ], 6000);
 
-  await sleep(2500);
+  await sleep(3000);
 
   await safeClick(page, [
     'button:has-text("Selecionar loja")',
@@ -102,11 +100,11 @@ async function applyCep(page, cep) {
     'button:has-text("Comprar nessa loja")',
     'button:has-text("Continuar")',
     'button:has-text("Confirmar")'
-  ], 2500);
+  ], 4000);
 
-  await sleep(2500);
+  await sleep(3000);
 
-  const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
+  const bodyText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
   const formatted = cep.slice(0, 5) + '-' + cep.slice(5);
 
   const ok =
@@ -134,14 +132,15 @@ async function openSearch(page, query) {
 
       await page.goto(url, {
         waitUntil: 'domcontentloaded',
-        timeout: 25000
+        timeout: 45000
       });
 
-      await sleep(3000);
+      await sleep(5000);
 
-      const bodyText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+      const bodyText = await page.locator('body').innerText({ timeout: 8000 }).catch(() => '');
 
       if (bodyText && /R\$|\d+,\d{2}|produto|resultados|tang/i.test(bodyText)) {
+        console.log('[ATACADAO] Página de busca carregada');
         return true;
       }
     } catch (error) {
@@ -157,9 +156,10 @@ async function openSearch(page, query) {
     'input[placeholder*="busca"]',
     'input[name="q"]',
     'input[name="search"]'
-  ], query, 4000);
+  ], query, 6000);
 
   if (!filled) {
+    console.log('[ATACADAO] Input de busca não encontrado');
     return false;
   }
 
@@ -169,9 +169,9 @@ async function openSearch(page, query) {
     'input[placeholder*="busca"]',
     'input[name="q"]',
     'input[name="search"]'
-  ], 'Enter', 1500);
+  ], 'Enter', 2500);
 
-  await sleep(3000);
+  await sleep(5000);
 
   return true;
 }
@@ -194,11 +194,9 @@ async function extractProducts(page, query, cep, site, sameProductVariant) {
   ];
 
   for (const selector of selectors) {
-    let count = 0;
-
     try {
       const cards = page.locator(selector);
-      count = Math.min(await cards.count(), 25);
+      const count = Math.min(await cards.count(), 30);
 
       if (!count) {
         continue;
@@ -208,10 +206,11 @@ async function extractProducts(page, query, cep, site, sameProductVariant) {
 
       for (let i = 0; i < count; i++) {
         const card = cards.nth(i);
+
         let fullText = '';
 
         try {
-          fullText = await card.innerText({ timeout: 1000 });
+          fullText = await card.innerText({ timeout: 1500 });
         } catch (error) {
           continue;
         }
@@ -228,7 +227,7 @@ async function extractProducts(page, query, cep, site, sameProductVariant) {
           'h2',
           'h3',
           'a'
-        ], 1000) || fullText.split('\n')[0];
+        ], 1500) || fullText.split('\n')[0];
 
         if (!sameProductVariant(query, `${name} ${fullText}`)) {
           continue;
@@ -244,10 +243,10 @@ async function extractProducts(page, query, cep, site, sameProductVariant) {
         const unitPrice = prices.length >= 2 ? Math.max(...prices) : null;
 
         const image =
-          await attrFirst(card, ['img'], 'src', 1000) ||
-          await attrFirst(card, ['img'], 'data-src', 1000);
+          await attrFirst(card, ['img'], 'src', 1500) ||
+          await attrFirst(card, ['img'], 'data-src', 1500);
 
-        const href = await attrFirst(card, ['a'], 'href', 1000);
+        const href = await attrFirst(card, ['a'], 'href', 1500);
 
         items.push(buildItem({
           name,
