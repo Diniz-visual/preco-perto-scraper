@@ -161,7 +161,7 @@ async function openSearch(page, query) {
 
       const bodyText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
 
-      if (bodyText && /R\$|\d+,\d{2}|produto|resultados|tang/i.test(bodyText)) {
+      if (bodyText && /R\$|\d+,\d{2}|produto|resultados/i.test(bodyText)) {
         console.log('[ATACADAO] Página de busca carregada');
         return true;
       }
@@ -170,47 +170,11 @@ async function openSearch(page, query) {
     }
   }
 
-  console.log('[ATACADAO] Tentando busca pelo input');
-
-  const filled = await safeFill(page, [
-    'input[type="search"]',
-    'input[placeholder*="Buscar"]',
-    'input[placeholder*="busca"]',
-    'input[name="q"]',
-    'input[name="search"]'
-  ], query, 2500);
-
-  if (!filled) {
-    console.log('[ATACADAO] Input de busca não encontrado');
-    return false;
-  }
-
-  await safePress(page, [
-    'input[type="search"]',
-    'input[placeholder*="Buscar"]',
-    'input[placeholder*="busca"]',
-    'input[name="q"]',
-    'input[name="search"]'
-  ], 'Enter', 1500);
-
-  await sleep(3500);
-
-  return true;
+  return false;
 }
 
-async function extractProducts(page, query, cep, site, sameProductVariant) {
-  const items = [];
-
-  console.log('[ATACADAO] Extraindo produtos');
-
-  const bodyText = await page.locator('body').innerText({ timeout: 8000 }).catch(() => '');
-
-  if (!bodyText || bodyText.length < 100) {
-    console.log('[ATACADAO] Body vazio ou pequeno.');
-    return [];
-  }
-
-  console.log('[ATACADAO] Body length:', bodyText.length);
+async function findBestProductLink(page, query, sameProductVariant) {
+  console.log('[ATACADAO] Procurando link do produto correto');
 
   const selectors = [
     '[data-testid*="product"]',
@@ -221,88 +185,150 @@ async function extractProducts(page, query, cep, site, sameProductVariant) {
     '[class*="product"]',
     '[class*="Product"]',
     'article',
-    'li',
-    'a'
+    'li'
   ];
 
   for (const selector of selectors) {
-    try {
-      const cards = page.locator(selector);
-      const count = Math.min(await cards.count(), 35);
+    const cards = page.locator(selector);
+    const count = Math.min(await cards.count(), 30);
 
-      if (!count) {
+    if (!count) continue;
+
+    console.log(`[ATACADAO] Selector ${selector}: ${count} cards`);
+
+    for (let i = 0; i < count; i++) {
+      const card = cards.nth(i);
+
+      let fullText = '';
+
+      try {
+        fullText = await card.innerText({ timeout: 1000 });
+      } catch (error) {
         continue;
       }
 
-      console.log(`[ATACADAO] Selector ${selector}: ${count} cards`);
-
-      for (let i = 0; i < count; i++) {
-        const card = cards.nth(i);
-
-        let fullText = '';
-
-        try {
-          fullText = await card.innerText({ timeout: 800 });
-        } catch (error) {
-          continue;
-        }
-
-        if (!fullText || !sameProductVariant(query, fullText)) {
-          continue;
-        }
-
-        const prices = pricesFromText(fullText);
-
-        if (!prices.length) {
-          continue;
-        }
-
-        const name = await textFirst(card, [
-          '[class*="name"]',
-          '[class*="title"]',
-          '[data-testid*="name"]',
-          '[data-testid*="title"]',
-          'h2',
-          'h3',
-          'a'
-        ], 800) || fullText.split('\n')[0];
-
-        if (!sameProductVariant(query, `${name} ${fullText}`)) {
-          continue;
-        }
-
-        const price = Math.min(...prices);
-        const unitPrice = prices.length >= 2 ? Math.max(...prices) : null;
-
-        const image =
-          await attrFirst(card, ['img'], 'src', 800) ||
-          await attrFirst(card, ['img'], 'data-src', 800);
-
-        const href = await attrFirst(card, ['a'], 'href', 800);
-
-        items.push(buildItem({
-          name,
-          fullText,
-          price,
-          unitPrice,
-          image: absoluteUrl(image, BASE_URL),
-          sourceUrl: absoluteUrl(href, BASE_URL),
-          site,
-          cep
-        }));
+      if (!fullText || !sameProductVariant(query, fullText)) {
+        continue;
       }
 
-      if (items.length) {
-        break;
+      const href = await attrFirst(card, ['a'], 'href', 1000);
+
+      if (!href) {
+        continue;
       }
-    } catch (error) {
-      console.log('[ATACADAO] Erro ao extrair selector:', selector, error.message);
+
+      const name = await textFirst(card, [
+        '[class*="name"]',
+        '[class*="title"]',
+        '[data-testid*="name"]',
+        '[data-testid*="title"]',
+        'h2',
+        'h3',
+        'a'
+      ], 1000) || fullText.split('\n')[0];
+
+      const url = absoluteUrl(href, BASE_URL);
+
+      console.log('[ATACADAO] Produto escolhido:', name);
+      console.log('[ATACADAO] URL produto:', url);
+
+      return {
+        name,
+        url,
+        searchText: fullText
+      };
     }
   }
 
-  console.log('[ATACADAO] Itens extraídos:', items.length);
+  return null;
+}
 
-  return items;
+function pickMainPriceFromText(text) {
+  const prices = pricesFromText(text);
+
+  if (!prices.length) {
+    return {
+      price: 0,
+      oldPrice: null,
+      unitPrice: null
+    };
+  }
+
+  const sorted = [...prices].sort((a, b) => a - b);
+
+  const price = sorted[0];
+  const oldPrice = sorted.length >= 2 ? sorted[sorted.length - 1] : null;
+
+  return {
+    price,
+    oldPrice: oldPrice && oldPrice > price ? oldPrice : null,
+    unitPrice: oldPrice && oldPrice > price ? oldPrice : null
+  };
+}
+
+async function extractProductDetail(page, product, query, cep, site, sameProductVariant) {
+  console.log('[ATACADAO] Abrindo detalhe do produto');
+
+  await page.goto(product.url, {
+    waitUntil: 'domcontentloaded',
+    timeout: 45000
+  });
+
+  await sleep(4500);
+
+  const bodyText = await page.locator('body').innerText({ timeout: 10000 }).catch(() => '');
+
+  if (!bodyText || bodyText.length < 100) {
+    console.log('[ATACADAO] Página de detalhe vazia.');
+    return null;
+  }
+
+  const title = await textFirst(page, [
+    'h1',
+    '[data-testid*="title"]',
+    '[class*="title"]',
+    '[class*="name"]'
+  ], 2000) || product.name;
+
+  if (!sameProductVariant(query, `${title} ${bodyText}`)) {
+    console.log('[ATACADAO] Detalhe não bate com a busca:', title);
+    return null;
+  }
+
+  const { price, oldPrice, unitPrice } = pickMainPriceFromText(bodyText);
+
+  if (!price) {
+    console.log('[ATACADAO] Nenhum preço encontrado no detalhe.');
+    return null;
+  }
+
+  const image =
+    await attrFirst(page, ['img[alt*="' + title.split(' ')[0] + '"]'], 'src', 1000) ||
+    await attrFirst(page, ['img'], 'src', 1000) ||
+    await attrFirst(page, ['img'], 'data-src', 1000);
+
+  const item = buildItem({
+    name: title,
+    fullText: bodyText,
+    price,
+    unitPrice,
+    image: absoluteUrl(image, BASE_URL),
+    sourceUrl: product.url,
+    site,
+    cep
+  });
+
+  if (oldPrice) {
+    item.old_price = oldPrice;
+    item.unit_price = unitPrice;
+    item.is_promotion = true;
+    item.discount_percent = Math.round(((oldPrice - price) / oldPrice) * 100);
+  }
+
+  console.log('[ATACADAO] Preço detalhe:', price);
+  console.log('[ATACADAO] Preço antigo detalhe:', oldPrice || 'não encontrado');
+
+  return item;
 }
 
 async function scrape({ page, cep, query, site, sameProductVariant }) {
@@ -326,12 +352,30 @@ async function scrape({ page, cep, query, site, sameProductVariant }) {
     };
   }
 
-  const items = await extractProducts(page, query, cep, site, sameProductVariant);
+  const product = await findBestProductLink(page, query, sameProductVariant);
+
+  if (!product) {
+    return {
+      success: true,
+      message: `Nenhum produto compatível encontrado no Atacadão. CEP aplicado: ${cepApplied ? 'sim' : 'não confirmado'}.`,
+      items: []
+    };
+  }
+
+  const detailItem = await extractProductDetail(page, product, query, cep, site, sameProductVariant);
+
+  if (!detailItem) {
+    return {
+      success: true,
+      message: `Produto encontrado, mas não foi possível ler o preço do detalhe. CEP aplicado: ${cepApplied ? 'sim' : 'não confirmado'}.`,
+      items: []
+    };
+  }
 
   return {
     success: true,
-    message: `${items.length} produto(s) no Atacadão. CEP aplicado: ${cepApplied ? 'sim' : 'não confirmado'}.`,
-    items
+    message: `1 produto no Atacadão com preço da página de detalhe. CEP aplicado: ${cepApplied ? 'sim' : 'não confirmado'}.`,
+    items: [detailItem]
   };
 }
 
