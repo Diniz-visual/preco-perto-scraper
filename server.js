@@ -26,6 +26,18 @@ const adapters = {
   drogasil
 };
 
+function withTimeout(promise, ms, label = 'Operação') {
+  let timer;
+
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} excedeu o tempo limite de ${ms / 1000}s`));
+    }, ms);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 function cleanCep(value) {
   return String(value || '').replace(/\D+/g, '');
 }
