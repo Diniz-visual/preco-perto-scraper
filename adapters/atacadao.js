@@ -376,6 +376,87 @@ async function openSearch(page, query) {
 async function findBestProductLink(page, query, sameProductVariant) {
   console.log('[ATACADAO] Procurando produto correto');
 
+  /*
+   * Primeiro pega SOMENTE links reais de produto.
+   * No Atacadão, produto costuma terminar com /p.
+   */
+  const links = page.locator('a[href*="/p"]');
+  const count = Math.min(await links.count(), 50);
+
+  console.log(`[ATACADAO] Links de produto encontrados: ${count}`);
+
+  for (let i = 0; i < count; i++) {
+    const link = links.nth(i);
+
+    let href = '';
+    let fullText = '';
+
+    try {
+      href = await link.getAttribute('href', { timeout: 1000 });
+      fullText = await link.innerText({ timeout: 1200 });
+    } catch (error) {
+      continue;
+    }
+
+    if (!href) {
+      continue;
+    }
+
+    const url = absoluteUrl(href, BASE_URL);
+
+    if (!url.includes('/p')) {
+      continue;
+    }
+
+    if (!fullText || fullText.trim().length < 5) {
+      try {
+        const parent = link.locator('xpath=ancestor::*[contains(@data-testid, "product") or contains(@class, "product") or contains(@class, "Product")][1]');
+        fullText = await parent.innerText({ timeout: 1200 });
+      } catch (error) {}
+    }
+
+    if (!fullText || fullText.trim().length < 5) {
+      continue;
+    }
+
+    if (/produtos encontrados|compre por categoria|super ofertas/i.test(fullText)) {
+      continue;
+    }
+
+    if (!sameProductVariant(query, fullText)) {
+      continue;
+    }
+
+    const lines = fullText
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const name = lines.find((line) => {
+      return (
+        !line.includes('R$') &&
+        !/produtos encontrados|compre por categoria|super ofertas/i.test(line) &&
+        line.length > 8
+      );
+    }) || lines[0] || fullText;
+
+    if (/produtos encontrados|compre por categoria|super ofertas/i.test(name)) {
+      continue;
+    }
+
+    console.log('[ATACADAO] Produto escolhido:', name);
+    console.log('[ATACADAO] URL produto:', url);
+
+    return {
+      name,
+      url,
+      searchText: fullText
+    };
+  }
+
+  /*
+   * Fallback por card, mas sempre exigindo link /p.
+   */
   const selectors = [
     '[data-testid*="product"]',
     '[class*="product-card"]',
@@ -390,15 +471,15 @@ async function findBestProductLink(page, query, sameProductVariant) {
 
   for (const selector of selectors) {
     const cards = page.locator(selector);
-    const count = Math.min(await cards.count(), 35);
+    const cardCount = Math.min(await cards.count(), 35);
 
-    if (!count) {
+    if (!cardCount) {
       continue;
     }
 
-    console.log(`[ATACADAO] Selector ${selector}: ${count} cards`);
+    console.log(`[ATACADAO] Selector fallback ${selector}: ${cardCount} cards`);
 
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < cardCount; i++) {
       const card = cards.nth(i);
 
       let fullText = '';
@@ -409,30 +490,42 @@ async function findBestProductLink(page, query, sameProductVariant) {
         continue;
       }
 
-      if (!fullText || !sameProductVariant(query, fullText)) {
+      if (!fullText || /produtos encontrados/i.test(fullText)) {
         continue;
       }
 
-      const href = await attrFirst(card, ['a'], 'href', 1200);
+      if (!sameProductVariant(query, fullText)) {
+        continue;
+      }
+
+      const href = await attrFirst(card, ['a[href*="/p"]'], 'href', 1200);
 
       if (!href) {
         continue;
       }
 
-      const name = await textFirst(card, [
-        '[class*="name"]',
-        '[class*="title"]',
-        '[data-testid*="name"]',
-        '[data-testid*="title"]',
-        'h2',
-        'h3',
-        'a'
-      ], 1200) || fullText.split('\n')[0];
-
       const url = absoluteUrl(href, BASE_URL);
 
-      console.log('[ATACADAO] Produto escolhido:', name);
-      console.log('[ATACADAO] URL produto:', url);
+      if (!url.includes('/p')) {
+        continue;
+      }
+
+      const name = await textFirst(card, [
+        '[data-testid*="name"]',
+        '[data-testid*="title"]',
+        '[class*="name"]',
+        '[class*="title"]',
+        'h2',
+        'h3',
+        'a[href*="/p"]'
+      ], 1200) || fullText.split('\n')[0];
+
+      if (/produtos encontrados|compre por categoria|super ofertas/i.test(name)) {
+        continue;
+      }
+
+      console.log('[ATACADAO] Produto escolhido fallback:', name);
+      console.log('[ATACADAO] URL produto fallback:', url);
 
       return {
         name,
@@ -441,6 +534,8 @@ async function findBestProductLink(page, query, sameProductVariant) {
       };
     }
   }
+
+  console.log('[ATACADAO] Nenhum link de produto válido encontrado');
 
   return null;
 }
