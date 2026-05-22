@@ -235,8 +235,8 @@ app.post('/scrape', async (req, res) => {
 
         const page = await context.newPage();
 
-        page.setDefaultTimeout(12000);
-        page.setDefaultNavigationTimeout(25000);
+        page.setDefaultTimeout(20000);
+        page.setDefaultNavigationTimeout(45000);
 
         const result = await withTimeout(
           adapter.scrape({
@@ -246,7 +246,7 @@ app.post('/scrape', async (req, res) => {
             site,
             sameProductVariant
           }),
-          45000,
+          120000,
           `Adapter ${site.id}`
         );
 
