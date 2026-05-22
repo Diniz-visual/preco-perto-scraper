@@ -166,6 +166,100 @@ app.get('/test-browser', async (req, res) => {
   }
 });
 
+app.get('/debug-atacadao', async (req, res) => {
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+
+    const context = await browser.newContext({
+      locale: 'pt-BR',
+      timezoneId: 'America/Sao_Paulo',
+      viewport: {
+        width: 1366,
+        height: 768
+      },
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36'
+    });
+
+    const page = await context.newPage();
+
+    page.setDefaultTimeout(10000);
+    page.setDefaultNavigationTimeout(30000);
+
+    await page.goto('https://www.atacadao.com.br/', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    });
+
+    await page.waitForTimeout(5000);
+
+    const data = await page.evaluate(() => {
+      function cleanText(value) {
+        return String(value || '').replace(/\s+/g, ' ').trim();
+      }
+
+      const buttons = Array.from(document.querySelectorAll('button')).map((el, index) => ({
+        index,
+        text: cleanText(el.innerText || el.textContent),
+        aria: el.getAttribute('aria-label'),
+        title: el.getAttribute('title'),
+        className: el.className,
+        id: el.id
+      })).filter((item) => item.text || item.aria || item.title || item.className || item.id);
+
+      const links = Array.from(document.querySelectorAll('a')).map((el, index) => ({
+        index,
+        text: cleanText(el.innerText || el.textContent),
+        aria: el.getAttribute('aria-label'),
+        href: el.getAttribute('href'),
+        className: el.className,
+        id: el.id
+      })).filter((item) => item.text || item.aria || item.href || item.className || item.id);
+
+      const inputs = Array.from(document.querySelectorAll('input')).map((el, index) => ({
+        index,
+        type: el.getAttribute('type'),
+        name: el.getAttribute('name'),
+        placeholder: el.getAttribute('placeholder'),
+        aria: el.getAttribute('aria-label'),
+        inputmode: el.getAttribute('inputmode'),
+        className: el.className,
+        id: el.id
+      }));
+
+      const bodyText = cleanText(document.body.innerText).slice(0, 1500);
+
+      return {
+        url: location.href,
+        title: document.title,
+        bodyText,
+        buttons,
+        links,
+        inputs
+      };
+    });
+
+    await context.close();
+
+    res.json({
+      success: true,
+      message: 'Debug Atacadão gerado.',
+      ...data
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  } finally {
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+  }
+});
+
 app.post('/scrape', async (req, res) => {
   const cep = cleanCep(req.body.cep);
   const query = String(req.body.query || '').trim();
