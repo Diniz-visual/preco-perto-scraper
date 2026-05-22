@@ -60,6 +60,7 @@ function extractBrand(name) {
     pepsi: 'Pepsi',
     omo: 'OMO',
     ype: 'Ypê',
+    ypê: 'Ypê',
     dorflex: 'Dorflex',
     colgate: 'Colgate',
     dove: 'Dove',
@@ -102,12 +103,33 @@ async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function safeClick(pageOrLocator, selectors, timeout = 2500) {
+/**
+ * IMPORTANTE:
+ * Timeout aqui é GLOBAL, não por seletor.
+ * Isso evita travar 120s tentando um monte de selector.
+ */
+async function safeClick(pageOrLocator, selectors, totalTimeout = 3000) {
+  const startedAt = Date.now();
+  const perSelectorTimeout = 450;
+
   for (const selector of selectors) {
+    const elapsed = Date.now() - startedAt;
+
+    if (elapsed >= totalTimeout) {
+      return false;
+    }
+
     try {
       const el = pageOrLocator.locator(selector).first();
-      await el.waitFor({ state: 'visible', timeout });
-      await el.click({ timeout });
+      await el.waitFor({
+        state: 'visible',
+        timeout: Math.min(perSelectorTimeout, totalTimeout - elapsed)
+      });
+
+      await el.click({
+        timeout: Math.min(perSelectorTimeout, totalTimeout - elapsed)
+      });
+
       return true;
     } catch (e) {}
   }
@@ -115,12 +137,28 @@ async function safeClick(pageOrLocator, selectors, timeout = 2500) {
   return false;
 }
 
-async function safeFill(pageOrLocator, selectors, value, timeout = 3500) {
+async function safeFill(pageOrLocator, selectors, value, totalTimeout = 3000) {
+  const startedAt = Date.now();
+  const perSelectorTimeout = 450;
+
   for (const selector of selectors) {
+    const elapsed = Date.now() - startedAt;
+
+    if (elapsed >= totalTimeout) {
+      return false;
+    }
+
     try {
       const el = pageOrLocator.locator(selector).first();
-      await el.waitFor({ state: 'visible', timeout });
-      await el.fill(value, { timeout });
+      await el.waitFor({
+        state: 'visible',
+        timeout: Math.min(perSelectorTimeout, totalTimeout - elapsed)
+      });
+
+      await el.fill(value, {
+        timeout: Math.min(perSelectorTimeout, totalTimeout - elapsed)
+      });
+
       return true;
     } catch (e) {}
   }
@@ -128,12 +166,28 @@ async function safeFill(pageOrLocator, selectors, value, timeout = 3500) {
   return false;
 }
 
-async function safePress(pageOrLocator, selectors, key = 'Enter', timeout = 2500) {
+async function safePress(pageOrLocator, selectors, key = 'Enter', totalTimeout = 2000) {
+  const startedAt = Date.now();
+  const perSelectorTimeout = 350;
+
   for (const selector of selectors) {
+    const elapsed = Date.now() - startedAt;
+
+    if (elapsed >= totalTimeout) {
+      return false;
+    }
+
     try {
       const el = pageOrLocator.locator(selector).first();
-      await el.waitFor({ state: 'visible', timeout });
-      await el.press(key, { timeout });
+      await el.waitFor({
+        state: 'visible',
+        timeout: Math.min(perSelectorTimeout, totalTimeout - elapsed)
+      });
+
+      await el.press(key, {
+        timeout: Math.min(perSelectorTimeout, totalTimeout - elapsed)
+      });
+
       return true;
     } catch (e) {}
   }
@@ -141,11 +195,23 @@ async function safePress(pageOrLocator, selectors, key = 'Enter', timeout = 2500
   return false;
 }
 
-async function textFirst(locator, selectors, timeout = 1600) {
+async function textFirst(locator, selectors, totalTimeout = 1200) {
+  const startedAt = Date.now();
+  const perSelectorTimeout = 300;
+
   for (const selector of selectors) {
+    const elapsed = Date.now() - startedAt;
+
+    if (elapsed >= totalTimeout) {
+      return '';
+    }
+
     try {
       const el = locator.locator(selector).first();
-      const text = await el.innerText({ timeout });
+      const text = await el.innerText({
+        timeout: Math.min(perSelectorTimeout, totalTimeout - elapsed)
+      });
+
       if (text && text.trim()) return text.trim();
     } catch (e) {}
   }
@@ -153,11 +219,23 @@ async function textFirst(locator, selectors, timeout = 1600) {
   return '';
 }
 
-async function attrFirst(locator, selectors, attr, timeout = 1600) {
+async function attrFirst(locator, selectors, attr, totalTimeout = 1200) {
+  const startedAt = Date.now();
+  const perSelectorTimeout = 300;
+
   for (const selector of selectors) {
+    const elapsed = Date.now() - startedAt;
+
+    if (elapsed >= totalTimeout) {
+      return '';
+    }
+
     try {
       const el = locator.locator(selector).first();
-      const value = await el.getAttribute(attr, { timeout });
+      const value = await el.getAttribute(attr, {
+        timeout: Math.min(perSelectorTimeout, totalTimeout - elapsed)
+      });
+
       if (value && value.trim()) return value.trim();
     } catch (e) {}
   }
@@ -167,12 +245,12 @@ async function attrFirst(locator, selectors, attr, timeout = 1600) {
 
 async function acceptCookies(page) {
   await safeClick(page, [
+    '#onetrust-accept-btn-handler',
     'button:has-text("Aceitar")',
     'button:has-text("Aceito")',
     'button:has-text("Entendi")',
     'button:has-text("Permitir")',
     'button:has-text("Continuar")',
-    '#onetrust-accept-btn-handler',
     '[data-testid*="cookie"] button',
     '[class*="cookie"] button'
   ], 2500);
