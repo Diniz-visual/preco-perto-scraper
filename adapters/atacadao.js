@@ -7,6 +7,7 @@ const {
   acceptCookies,
   textFirst,
   attrFirst,
+  pricesFromText,
   buildItem
 } = require('./utils');
 
@@ -34,129 +35,35 @@ async function blockHeavyResources(page) {
   });
 }
 
-function parsePriceBR(value) {
-  const cleaned = String(value || '')
-    .replace(/[^\d,\.]/g, '')
-    .trim();
-
-  if (!cleaned) return 0;
-
-  return Number(
-    cleaned
-      .replace(/\./g, '')
-      .replace(',', '.')
-  );
+function formatCep(cep) {
+  const clean = String(cep || '').replace(/\D+/g, '');
+  return clean.length === 8 ? `${clean.slice(0, 5)}-${clean.slice(5)}` : clean;
 }
 
-function extractPricesFromText(text) {
-  const full = String(text || '');
-  const regex = /R\$\s*\d{1,3}(?:\.\d{3})*,\d{2}/g;
-
-  return [...full.matchAll(regex)]
-    .map((match) => parsePriceBR(match[0]))
+function extractPrices(text) {
+  const values = [...String(text || '').matchAll(/R\$\s*\d{1,3}(?:\.\d{3})*,\d{2}/g)]
+    .map((match) => match[0])
+    .map((value) => {
+      return Number(
+        value
+          .replace(/[^\d,\.]/g, '')
+          .replace(/\./g, '')
+          .replace(',', '.')
+      );
+    })
     .filter((value) => value > 0);
+
+  return [...new Set(values)].sort((a, b) => a - b);
 }
 
-async function getVisibleText(page, selectors, timeout = 1500) {
-  for (const selector of selectors) {
-    try {
-      const locator = page.locator(selector).first();
-
-      await locator.waitFor({
-        state: 'visible',
-        timeout
-      });
-
-      const text = await locator.innerText({
-        timeout
-      });
-
-      if (text && text.trim()) {
-        return text.trim();
-      }
-    } catch (error) {}
-  }
-
-  return '';
-}
-
-async function getPriceBlockText(page) {
-  const selectors = [
-    '[data-testid*="price"]',
-    '[data-testid*="Price"]',
-    '[class*="price"]',
-    '[class*="Price"]',
-    '[class*="valor"]',
-    '[class*="Valor"]',
-    '[class*="buybox"]',
-    '[class*="BuyBox"]',
-    '[class*="product-info"]',
-    '[class*="ProductInfo"]',
-    '[class*="summary"]',
-    '[class*="Summary"]',
-    'aside',
-    'section:has-text("R$")',
-    'div:has-text("R$")'
-  ];
-
-  for (const selector of selectors) {
-    try {
-      const locators = page.locator(selector);
-      const count = Math.min(await locators.count(), 12);
-
-      for (let i = 0; i < count; i++) {
-        const el = locators.nth(i);
-
-        const text = await el.innerText({
-          timeout: 1200
-        }).catch(() => '');
-
-        if (!text || !text.includes('R$')) {
-          continue;
-        }
-
-        const prices = extractPricesFromText(text);
-
-        if (prices.length) {
-          return text;
-        }
-      }
-    } catch (error) {}
-  }
-
-  return '';
-}
-
-function pickPriceFromReliableBlock(text) {
-  const prices = extractPricesFromText(text);
-
-  if (!prices.length) {
-    return {
-      price: 0,
-      oldPrice: null
-    };
-  }
-
-  const unique = [...new Set(prices)].sort((a, b) => a - b);
-
-  let price = unique[0];
-  let oldPrice = null;
-
-  if (unique.length >= 2) {
-    oldPrice = unique[unique.length - 1];
-
-    if (oldPrice <= price) {
-      oldPrice = null;
-    }
-  }
-
-  return {
-    price,
-    oldPrice
-  };
+async function getBodyText(page, timeout = 5000) {
+  return page.locator('body').innerText({ timeout }).catch(() => '');
 }
 
 async function applyCep(page, cep) {
+  const cleanCep = String(cep || '').replace(/\D+/g, '');
+  const formattedCep = formatCep(cleanCep);
+
   console.log('[ATACADAO] Abrindo site');
 
   await page.goto(BASE_URL, {
@@ -167,7 +74,7 @@ async function applyCep(page, cep) {
   await sleep(2500);
   await acceptCookies(page);
 
-  console.log('[ATACADAO] Tentando abrir seletor de CEP');
+  console.log('[ATACADAO] Tentando abrir área de CEP');
 
   const opened = await safeClick(page, [
     'button:has-text("CEP")',
@@ -175,21 +82,27 @@ async function applyCep(page, cep) {
     'button:has-text("Entrega")',
     'button:has-text("Alterar")',
     'button:has-text("Editar")',
+    'button:has-text("Informe")',
     'a:has-text("CEP")',
     'a:has-text("Entregue")',
+    'a:has-text("Alterar")',
     '[aria-label*="CEP"]',
     '[aria-label*="cep"]',
+    '[aria-label*="endereço"]',
+    '[aria-label*="Endereço"]',
     '[class*="delivery"]',
     '[class*="Delivery"]',
     '[class*="location"]',
     '[class*="Location"]',
+    '[class*="zipcode"]',
     '[class*="cep"]',
     '[data-testid*="cep"]',
+    '[data-testid*="zipcode"]',
     '[data-testid*="delivery"]',
     '[data-testid*="location"]'
-  ], 3500);
+  ], 4000);
 
-  console.log('[ATACADAO] Seletor de CEP aberto:', opened ? 'sim' : 'não');
+  console.log('[ATACADAO] Área de CEP aberta:', opened ? 'sim' : 'não');
 
   await sleep(1200);
 
@@ -205,14 +118,14 @@ async function applyCep(page, cep) {
     'input[aria-label*="cep"]',
     'input[inputmode="numeric"]',
     'input[type="tel"]'
-  ], cep, 4000);
+  ], cleanCep, 5000);
 
   if (!filled) {
-    console.log('[ATACADAO] Input de CEP não encontrado. Não é seguro capturar preço.');
+    console.log('[ATACADAO] Input de CEP não encontrado. Preço não será capturado.');
     return false;
   }
 
-  await sleep(600);
+  await sleep(700);
 
   await safePress(page, [
     'input[name="cep"]',
@@ -221,6 +134,7 @@ async function applyCep(page, cep) {
     'input[placeholder*="CEP"]',
     'input[placeholder*="cep"]',
     'input[aria-label*="CEP"]',
+    'input[aria-label*="cep"]',
     'input[inputmode="numeric"]',
     'input[type="tel"]'
   ], 'Enter', 2000);
@@ -236,9 +150,9 @@ async function applyCep(page, cep) {
     'button:has-text("Usar este endereço")',
     'button:has-text("Selecionar")',
     'button[type="submit"]'
-  ], 4000);
+  ], 4500);
 
-  await sleep(2500);
+  await sleep(3500);
 
   await safeClick(page, [
     'button:has-text("Selecionar loja")',
@@ -247,20 +161,19 @@ async function applyCep(page, cep) {
     'button:has-text("Comprar nessa loja")',
     'button:has-text("Continuar")',
     'button:has-text("Confirmar")'
-  ], 3500);
+  ], 4000);
 
-  await sleep(3500);
+  await sleep(4000);
 
-  const bodyText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
-  const formatted = cep.slice(0, 5) + '-' + cep.slice(5);
+  const bodyText = await getBodyText(page, 7000);
 
-  const ok =
-    bodyText.includes(cep) ||
-    bodyText.includes(formatted);
+  const confirmed =
+    bodyText.includes(cleanCep) ||
+    bodyText.includes(formattedCep);
 
-  console.log('[ATACADAO] CEP aplicado confirmado:', ok ? 'sim' : 'não');
+  console.log('[ATACADAO] CEP aplicado confirmado:', confirmed ? 'sim' : 'não');
 
-  return ok;
+  return confirmed;
 }
 
 async function openSearch(page, query) {
@@ -281,9 +194,9 @@ async function openSearch(page, query) {
         timeout: 35000
       });
 
-      await sleep(4000);
+      await sleep(4500);
 
-      const bodyText = await page.locator('body').innerText({ timeout: 6000 }).catch(() => '');
+      const bodyText = await getBodyText(page, 7000);
 
       if (bodyText && /produto|resultados|R\$|\d+,\d{2}/i.test(bodyText)) {
         console.log('[ATACADAO] Página de busca carregada');
@@ -298,7 +211,7 @@ async function openSearch(page, query) {
 }
 
 async function findBestProductLink(page, query, sameProductVariant) {
-  console.log('[ATACADAO] Procurando link do produto correto');
+  console.log('[ATACADAO] Procurando produto correto');
 
   const selectors = [
     '[data-testid*="product"]',
@@ -316,7 +229,9 @@ async function findBestProductLink(page, query, sameProductVariant) {
     const cards = page.locator(selector);
     const count = Math.min(await cards.count(), 35);
 
-    if (!count) continue;
+    if (!count) {
+      continue;
+    }
 
     console.log(`[ATACADAO] Selector ${selector}: ${count} cards`);
 
@@ -326,7 +241,7 @@ async function findBestProductLink(page, query, sameProductVariant) {
       let fullText = '';
 
       try {
-        fullText = await card.innerText({ timeout: 1000 });
+        fullText = await card.innerText({ timeout: 1200 });
       } catch (error) {
         continue;
       }
@@ -335,7 +250,7 @@ async function findBestProductLink(page, query, sameProductVariant) {
         continue;
       }
 
-      const href = await attrFirst(card, ['a'], 'href', 1000);
+      const href = await attrFirst(card, ['a'], 'href', 1200);
 
       if (!href) {
         continue;
@@ -349,7 +264,7 @@ async function findBestProductLink(page, query, sameProductVariant) {
         'h2',
         'h3',
         'a'
-      ], 1000) || fullText.split('\n')[0];
+      ], 1200) || fullText.split('\n')[0];
 
       const url = absoluteUrl(href, BASE_URL);
 
@@ -365,6 +280,71 @@ async function findBestProductLink(page, query, sameProductVariant) {
   }
 
   return null;
+}
+
+async function getPriceBlockText(page) {
+  const selectors = [
+    '[data-testid*="price"]',
+    '[data-testid*="Price"]',
+    '[class*="price"]',
+    '[class*="Price"]',
+    '[class*="valor"]',
+    '[class*="Valor"]',
+    '[class*="buybox"]',
+    '[class*="BuyBox"]',
+    '[class*="product-info"]',
+    '[class*="ProductInfo"]',
+    '[class*="summary"]',
+    '[class*="Summary"]',
+    'aside',
+    'section:has-text("R$")'
+  ];
+
+  for (const selector of selectors) {
+    try {
+      const locators = page.locator(selector);
+      const count = Math.min(await locators.count(), 12);
+
+      for (let i = 0; i < count; i++) {
+        const el = locators.nth(i);
+
+        const text = await el.innerText({ timeout: 1200 }).catch(() => '');
+
+        if (!text || !text.includes('R$')) {
+          continue;
+        }
+
+        const prices = extractPrices(text);
+
+        if (prices.length) {
+          return text;
+        }
+      }
+    } catch (error) {}
+  }
+
+  return '';
+}
+
+function pickPriceFromBlock(text) {
+  const prices = extractPrices(text);
+
+  if (!prices.length) {
+    return {
+      price: 0,
+      oldPrice: null
+    };
+  }
+
+  const unique = [...new Set(prices)].sort((a, b) => a - b);
+
+  const price = unique[0];
+  const oldPrice = unique.length >= 2 ? unique[unique.length - 1] : null;
+
+  return {
+    price,
+    oldPrice: oldPrice && oldPrice > price ? oldPrice : null
+  };
 }
 
 async function extractProductDetail(page, product, query, cep, site, sameProductVariant) {
@@ -384,31 +364,31 @@ async function extractProductDetail(page, product, query, cep, site, sameProduct
     '[class*="name"]'
   ], 2500) || product.name;
 
-  const bodyText = await page.locator('body').innerText({ timeout: 8000 }).catch(() => '');
+  const bodyText = await getBodyText(page, 9000);
 
   if (!bodyText || bodyText.length < 100) {
-    console.log('[ATACADAO] Página de detalhe vazia.');
+    console.log('[ATACADAO] Página de detalhe vazia');
     return null;
   }
 
   if (!sameProductVariant(query, `${title} ${bodyText}`)) {
-    console.log('[ATACADAO] Detalhe não bate com a busca:', title);
+    console.log('[ATACADAO] Produto do detalhe não bate com a busca:', title);
     return null;
   }
 
   const priceBlockText = await getPriceBlockText(page);
 
   if (!priceBlockText) {
-    console.log('[ATACADAO] Bloco de preço confiável não encontrado.');
+    console.log('[ATACADAO] Bloco de preço confiável não encontrado');
     return null;
   }
 
-  console.log('[ATACADAO] Texto do bloco de preço:', priceBlockText.replace(/\s+/g, ' ').slice(0, 300));
+  console.log('[ATACADAO] Bloco de preço:', priceBlockText.replace(/\s+/g, ' ').slice(0, 300));
 
-  const { price, oldPrice } = pickPriceFromReliableBlock(priceBlockText);
+  const { price, oldPrice } = pickPriceFromBlock(priceBlockText);
 
   if (!price) {
-    console.log('[ATACADAO] Nenhum preço válido encontrado no bloco confiável.');
+    console.log('[ATACADAO] Preço válido não encontrado');
     return null;
   }
 
@@ -448,9 +428,11 @@ async function scrape({ page, cep, query, site, sameProductVariant }) {
   });
 
   if (!cepApplied) {
+    console.log('[ATACADAO] Cancelado: CEP não foi aplicado/confirmado.');
+
     return {
       success: false,
-      message: 'Atacadão ignorado: não foi possível aplicar/confirmar o CEP. Para evitar preço errado, nada foi salvo.',
+      message: 'Atacadão ignorado: CEP não foi aplicado/confirmado. Nenhum preço foi salvo para evitar divergência.',
       items: []
     };
   }
@@ -487,7 +469,7 @@ async function scrape({ page, cep, query, site, sameProductVariant }) {
 
   return {
     success: true,
-    message: '1 produto no Atacadão com preço confiável da página de detalhe.',
+    message: '1 produto no Atacadão com preço confiável e CEP confirmado.',
     items: [detailItem]
   };
 }
